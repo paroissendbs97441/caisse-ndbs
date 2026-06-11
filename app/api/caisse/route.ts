@@ -116,6 +116,26 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true });
     }
 
+    // Espace utilisé par les justificatifs (somme des tailles dans le bucket)
+    if (action === "espace_justificatifs") {
+      let total = 0;
+      let nb = 0;
+      let offset = 0;
+      while (true) {
+        const { data, error } = await sb.storage.from("justificatifs").list("", { limit: 100, offset });
+        if (error) break;
+        if (!data || data.length === 0) break;
+        for (const f of data) {
+          const taille = (f as any)?.metadata?.size ?? 0;
+          total += Number(taille) || 0;
+          nb++;
+        }
+        if (data.length < 100) break;
+        offset += 100;
+      }
+      return NextResponse.json({ ok: true, octets: total, nb });
+    }
+
     return NextResponse.json({ ok: false, error: "Action inconnue." }, { status: 400 });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e.message }, { status: 500 });

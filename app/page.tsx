@@ -20,6 +20,8 @@ export default function Caisse() {
   const [enCours, setEnCours] = useState(false);
   const [rolesUser, setRolesUser] = useState<string[]>([]);
   const [espace, setEspace] = useState<{ octets: number; nb: number } | null>(null);
+  const [estComptableOuAdmin, setEstComptableOuAdmin] = useState(false);
+  const [correctifsEnAttente, setCorrectifsEnAttente] = useState(0);
 
   const ligneVide = { type: "entree", categorie: "", montant: "", moyen: "", num_cheque: "", payeur_nom: "", commentaire: "", justificatif_url: "" };
   const [form, setForm] = useState<any>(ligneVide);
@@ -71,7 +73,7 @@ export default function Caisse() {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "charger_journee", access_token: tk, date_caisse: date }),
     }).then((r) => r.json());
-    if (r.ok) { setJournee(r.journee); setLignes(r.lignes); setPeutModifier(r.peutModifier); }
+    if (r.ok) { setJournee(r.journee); setLignes(r.lignes); setPeutModifier(r.peutModifier); setEstComptableOuAdmin(!!r.estComptableOuAdmin); setCorrectifsEnAttente(r.correctifsEnAttente || 0); }
     else setMsg("Erreur : " + r.error);
   }
 
@@ -133,14 +135,19 @@ export default function Caisse() {
     window.open(url, "_blank");
   }
 
-  async function soumettre() {
-    if (!confirm("Soumettre la caisse du jour ? Elle sera verrouillée et un récapitulatif PDF sera envoyé par mail.")) return;
+  async function soumettre(reSoumission = false) {
+    const message = reSoumission
+      ? "Re-soumettre les correctifs ? Un mail détaillant les modifications sera envoyé."
+      : "Soumettre la caisse du jour ? Elle sera verrouillée et un récapitulatif PDF sera envoyé par mail.";
+    if (!confirm(message)) return;
     setEnCours(true);
     const r = await fetch("/api/caisse", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "soumettre", access_token: token, journee_id: journee.id }) }).then((r) => r.json());
     setEnCours(false);
-    if (r.ok) { setMsg("Caisse soumise ✅ — récapitulatif envoyé par mail."); chargerJournee(token, dateCaisse); }
-    else setMsg("Erreur : " + r.error);
+    if (r.ok) {
+      setMsg(r.premiereSoumission ? "Caisse soumise ✅ — récapitulatif envoyé par mail." : "Correctifs re-soumis ✅ — mail envoyé.");
+      chargerJournee(token, dateCaisse);
+    } else setMsg("Erreur : " + r.error);
   }
 
   if (autorise === null) return <p style={{ padding: 40 }}>Chargement…</p>;
@@ -276,9 +283,17 @@ export default function Caisse() {
 
         {!soumise && peutModifier && lignes.length > 0 && (
           <div style={{ textAlign: "center", margin: "16px 0" }}>
-            <button style={{ ...btn, background: "#15803d", fontSize: 16, padding: "12px 24px", opacity: enCours ? 0.6 : 1 }} disabled={enCours} onClick={soumettre}>
+            <button style={{ ...btn, background: "#15803d", fontSize: 16, padding: "12px 24px", opacity: enCours ? 0.6 : 1 }} disabled={enCours} onClick={() => soumettre(false)}>
               ✓ Soumettre la caisse du jour</button>
             <p style={{ fontSize: 12, color: "#777", marginTop: 6 }}>La journée sera verrouillée et un récapitulatif PDF envoyé par mail (paroisse, CPAE, administrateurs).</p>
+          </div>
+        )}
+
+        {soumise && estComptableOuAdmin && correctifsEnAttente > 0 && (
+          <div style={{ textAlign: "center", margin: "16px 0" }}>
+            <button style={{ ...btn, background: "#b45309", fontSize: 16, padding: "12px 24px", opacity: enCours ? 0.6 : 1 }} disabled={enCours} onClick={() => soumettre(true)}>
+              ↻ Re-soumettre les correctifs ({correctifsEnAttente})</button>
+            <p style={{ fontSize: 12, color: "#777", marginTop: 6 }}>Un mail détaillant les {correctifsEnAttente} modification(s) apportée(s) depuis la dernière soumission sera envoyé.</p>
           </div>
         )}
 
@@ -286,7 +301,7 @@ export default function Caisse() {
           <div style={carte}>
             <h2 style={{ fontSize: 15 }}>Espace justificatifs</h2>
             {(() => {
-              const LIMITE = 1024 * 1024 * 1024; // 1 Go
+              const LIMITE = 1024 * 1024 * 1024;
               const pct = Math.min(100, Math.round((espace.octets / LIMITE) * 1000) / 10);
               const mo = (espace.octets / (1024 * 1024)).toFixed(1);
               const couleur = pct < 70 ? "#15803d" : pct < 90 ? "#b45309" : "#b91c1c";

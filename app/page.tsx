@@ -18,6 +18,8 @@ export default function Caisse() {
   const [moyens, setMoyens] = useState<any[]>([]);
   const [msg, setMsg] = useState("");
   const [enCours, setEnCours] = useState(false);
+  const [rolesUser, setRolesUser] = useState<string[]>([]);
+  const [espace, setEspace] = useState<{ octets: number; nb: number } | null>(null);
 
   const ligneVide = { type: "entree", categorie: "", montant: "", moyen: "", num_cheque: "", payeur_nom: "", commentaire: "", justificatif_url: "" };
   const [form, setForm] = useState<any>(ligneVide);
@@ -42,6 +44,7 @@ export default function Caisse() {
       const { data: prof } = await getSupabase().from("profiles").select("nom_complet, roles").eq("id", data.user.id).single();
       const roles: string[] = prof?.roles ?? [];
       setProfil(prof);
+      setRolesUser(roles);
       if (!ROLES_OK.some((r) => roles.includes(r))) { setAutorise(false); return; }
       setAutorise(true);
       const { data: cats } = await getSupabase().from("caisse_categories").select("*").eq("actif", true).order("ordre");
@@ -49,9 +52,18 @@ export default function Caisse() {
       const { data: moys } = await getSupabase().from("caisse_moyens").select("*").eq("actif", true).order("ordre");
       setMoyens(moys ?? []);
       chargerJournee(tk, dateCaisse);
+      if (roles.includes("admin") || roles.includes("comptable")) chargerEspace(tk);
     }
     init();
   }, []);
+
+  async function chargerEspace(tk: string) {
+    const r = await fetch("/api/caisse", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "espace_justificatifs", access_token: tk }),
+    }).then((r) => r.json()).catch(() => null);
+    if (r?.ok) setEspace({ octets: r.octets, nb: r.nb });
+  }
 
   async function chargerJournee(tk: string, date: string) {
     setMsg("");
@@ -97,7 +109,7 @@ export default function Caisse() {
         body: JSON.stringify({ action: "ajouter_ligne", access_token: token, journee_id: journee.id, ligne }) }).then((r) => r.json());
     }
     setEnCours(false);
-    if (r.ok) { setForm(ligneVide); setFichier(null); setEditId(null); chargerJournee(token, dateCaisse); }
+    if (r.ok) { setForm(ligneVide); setFichier(null); setEditId(null); chargerJournee(token, dateCaisse); if (rolesUser.includes("admin") || rolesUser.includes("comptable")) chargerEspace(token); }
     else setMsg("Erreur : " + r.error);
   }
 
@@ -267,6 +279,31 @@ export default function Caisse() {
             <button style={{ ...btn, background: "#15803d", fontSize: 16, padding: "12px 24px", opacity: enCours ? 0.6 : 1 }} disabled={enCours} onClick={soumettre}>
               ✓ Soumettre la caisse du jour</button>
             <p style={{ fontSize: 12, color: "#777", marginTop: 6 }}>La journée sera verrouillée et un récapitulatif PDF envoyé par mail (paroisse, CPAE, administrateurs).</p>
+          </div>
+        )}
+
+        {espace && (rolesUser.includes("admin") || rolesUser.includes("comptable")) && (
+          <div style={carte}>
+            <h2 style={{ fontSize: 15 }}>Espace justificatifs</h2>
+            {(() => {
+              const LIMITE = 1024 * 1024 * 1024; // 1 Go
+              const pct = Math.min(100, Math.round((espace.octets / LIMITE) * 1000) / 10);
+              const mo = (espace.octets / (1024 * 1024)).toFixed(1);
+              const couleur = pct < 70 ? "#15803d" : pct < 90 ? "#b45309" : "#b91c1c";
+              return (
+                <>
+                  <div style={{ fontSize: 13, color: "#555", marginBottom: 6 }}>
+                    {mo} Mo utilisés sur 1024 Mo ({pct}%) — {espace.nb} fichier(s)
+                  </div>
+                  <div style={{ height: 10, background: "#eee", borderRadius: 6, overflow: "hidden" }}>
+                    <div style={{ width: `${pct}%`, height: "100%", background: couleur }} />
+                  </div>
+                  {pct >= 80 && <div style={{ fontSize: 12, color: "#b91c1c", marginTop: 6 }}>
+                    ⚠️ L'espace se remplit. Pensez à archiver les anciens justificatifs.
+                  </div>}
+                </>
+              );
+            })()}
           </div>
         )}
       </div>

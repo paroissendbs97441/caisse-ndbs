@@ -7,7 +7,30 @@ const ROLES_SAISIE = ["secretaire", "benevole", "admin", "comptable"];
 const GMAIL = process.env.GMAIL_USER!;
 
 function fr(s: string) { const [a, m, j] = s.split("-"); return `${j}/${m}/${a}`; }
-function eur(n: number) { return n.toFixed(2).replace(".", ",") + " €"; }
+function eur(n: number) { return Number(n).toFixed(2).replace(".", ",") + " €"; }
+function horodatage() {
+  return new Date().toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+function decrireLigne(l: any) {
+  const signe = l.type === "entree" ? "Entrée" : "Sortie";
+  return `${signe} ${eur(l.montant)} — ${l.categorie || "—"} (${l.payeur_nom || "?"})`;
+}
+
+function detailChangements(av: any, ap: any): string {
+  const champs: [string, string][] = [
+    ["type", "Type"], ["categorie", "Catégorie"], ["montant", "Montant"],
+    ["moyen", "Moyen"], ["num_cheque", "N° chèque"], ["payeur_nom", "Payeur"], ["commentaire", "Commentaire"],
+  ];
+  const out: string[] = [];
+  for (const [k, label] of champs) {
+    let avant = av[k] ?? "—";
+    let apres = ap[k] ?? "—";
+    if (k === "montant") { avant = eur(av[k] ?? 0); apres = eur(ap[k] ?? 0); }
+    if (String(avant) !== String(apres)) out.push(`${label} : ${avant} → ${apres}`);
+  }
+  return out.join(" ; ");
+}
 
 export async function POST(req: Request) {
   try {
@@ -30,7 +53,13 @@ export async function POST(req: Request) {
         journee = nouvelle;
       }
       const { data: lignes } = await sb.from("caisse_lignes").select("*").eq("journee_id", journee.id).order("cree_le");
-      return NextResponse.json({ ok: true, journee, lignes: lignes ?? [], peutModifier: journee.statut === "ouverte" || estComptableOuAdmin });
+      const { data: modifs } = await sb.from("caisse_modifications").select("id").eq("journee_id", journee.id).eq("notifie", false);
+      const correctifsEnAttente = (modifs ?? []).length;
+      return NextResponse.json({
+        ok: true, journee, lignes: lignes ?? [],
+        peutModifier: journee.statut === "ouverte" || estComptableOuAdmin,
+        estComptableOuAdmin, correctifsEnAttente,
+      });
     }
 
     if (action === "ajouter_ligne") {
@@ -43,45 +72,68 @@ export async function POST(req: Request) {
       if (!ligne.payeur_nom?.trim() || !ligne.montant || !ligne.type) {
         return NextResponse.json({ ok: false, error: "Type, montant et payeur obligatoires." }, { status: 400 });
       }
-      const { error } = await sb.from("caisse_lignes").insert({
+      const nouvelleLigne = {
         journee_id, type: ligne.type, categorie: ligne.categorie || null,
         montant: Number(ligne.montant), moyen: ligne.moyen || null,
         num_cheque: ligne.moyen === "cheque" ? (ligne.num_cheque || null) : null,
         payeur_nom: ligne.payeur_nom.trim(), commentaire: ligne.commentaire || null,
         justificatif_url: ligne.justificatif_url || null, cree_par: auth.user.id,
-      });
+      };
+      const { error } = await sb.from("caisse_lignes").insert(nouvelleLigne);
       if (error) throw error;
+      if (j.statut === "soumise") {
+        await sb.from("caisse_modifications").insert({
+          journee_id, type_action: "ajout", ligne_desc: decrireLigne(nouvelleLigne),
+          details: "Nouvelle ligne ajoutée", auteur: auth.nom,
+        });
+      }
       return NextResponse.json({ ok: true });
     }
 
     if (action === "modifier_ligne") {
       const { ligne_id, ligne } = body;
-      const { data: l } = await sb.from("caisse_lignes").select("journee_id").eq("id", ligne_id).single();
-      if (!l) return NextResponse.json({ ok: false, error: "Ligne introuvable." }, { status: 404 });
-      const { data: j } = await sb.from("caisse_journees").select("statut").eq("id", l.journee_id).single();
+      const { data: avant } = await sb.from("caisse_lignes").select("*").eq("id", ligne_id).single();
+      if (!avant) return NextResponse.json({ ok: false, error: "Ligne introuvable." }, { status: 404 });
+      const { data: j } = await sb.from("caisse_journees").select("statut").eq("id", avant.journee_id).single();
       if (j?.statut === "soumise" && !estComptableOuAdmin) {
         return NextResponse.json({ ok: false, error: "Journée soumise : modification réservée au comptable." }, { status: 403 });
       }
-      const { error } = await sb.from("caisse_lignes").update({
+      const apres = {
         type: ligne.type, categorie: ligne.categorie || null, montant: Number(ligne.montant),
         moyen: ligne.moyen || null, num_cheque: ligne.moyen === "cheque" ? (ligne.num_cheque || null) : null,
         payeur_nom: ligne.payeur_nom?.trim(), commentaire: ligne.commentaire || null,
         justificatif_url: ligne.justificatif_url ?? null,
         modifie_par: auth.user.id, modifie_le: new Date().toISOString(),
-      }).eq("id", ligne_id);
+      };
+      const { error } = await sb.from("caisse_lignes").update(apres).eq("id", ligne_id);
       if (error) throw error;
+      if (j?.statut === "soumise") {
+        const det = detailChangements(avant, apres);
+        if (det) {
+          await sb.from("caisse_modifications").insert({
+            journee_id: avant.journee_id, type_action: "modification",
+            ligne_desc: decrireLigne(avant), details: det, auteur: auth.nom,
+          });
+        }
+      }
       return NextResponse.json({ ok: true });
     }
 
     if (action === "supprimer_ligne") {
       const { ligne_id } = body;
-      const { data: l } = await sb.from("caisse_lignes").select("journee_id").eq("id", ligne_id).single();
-      if (!l) return NextResponse.json({ ok: false, error: "Ligne introuvable." }, { status: 404 });
-      const { data: j } = await sb.from("caisse_journees").select("statut").eq("id", l.journee_id).single();
+      const { data: avant } = await sb.from("caisse_lignes").select("*").eq("id", ligne_id).single();
+      if (!avant) return NextResponse.json({ ok: false, error: "Ligne introuvable." }, { status: 404 });
+      const { data: j } = await sb.from("caisse_journees").select("statut").eq("id", avant.journee_id).single();
       if (j?.statut === "soumise" && !estComptableOuAdmin) {
         return NextResponse.json({ ok: false, error: "Journée soumise : suppression réservée au comptable." }, { status: 403 });
       }
       await sb.from("caisse_lignes").delete().eq("id", ligne_id);
+      if (j?.statut === "soumise") {
+        await sb.from("caisse_modifications").insert({
+          journee_id: avant.journee_id, type_action: "suppression",
+          ligne_desc: decrireLigne(avant), details: "Ligne supprimée", auteur: auth.nom,
+        });
+      }
       return NextResponse.json({ ok: true });
     }
 
@@ -89,11 +141,39 @@ export async function POST(req: Request) {
       const { journee_id } = body;
       const { data: journee } = await sb.from("caisse_journees").select("*").eq("id", journee_id).single();
       if (!journee) return NextResponse.json({ ok: false, error: "Journée introuvable." }, { status: 404 });
-      if (journee.statut === "soumise") return NextResponse.json({ ok: false, error: "Journée déjà soumise." }, { status: 400 });
+
+      const premiereSoumission = journee.statut !== "soumise";
+      if (!premiereSoumission && !estComptableOuAdmin) {
+        return NextResponse.json({ ok: false, error: "Journée déjà soumise." }, { status: 400 });
+      }
+
       const { data: lignes } = await sb.from("caisse_lignes").select("*").eq("journee_id", journee_id).order("cree_le");
       if (!lignes || lignes.length === 0) return NextResponse.json({ ok: false, error: "Aucune ligne à soumettre." }, { status: 400 });
 
-      const pdfBuffer = await genererPDF(journee, lignes);
+      let correctifs: any[] = [];
+      if (!premiereSoumission) {
+        const { data: modifs } = await sb.from("caisse_modifications")
+          .select("*").eq("journee_id", journee_id).eq("notifie", false).order("fait_le");
+        correctifs = modifs ?? [];
+        if (correctifs.length === 0) {
+          return NextResponse.json({ ok: false, error: "Aucun correctif à signaler depuis la dernière soumission." }, { status: 400 });
+        }
+      }
+
+      const pdfBuffer = await genererPDF(journee, lignes, correctifs);
+
+      const pjJustificatifs: any[] = [];
+      for (const l of lignes) {
+        if (l.justificatif_url) {
+          try {
+            const { data: dl } = await sb.storage.from("justificatifs").download(l.justificatif_url);
+            if (dl) {
+              const buf = Buffer.from(await dl.arrayBuffer());
+              pjJustificatifs.push({ filename: l.justificatif_url, content: buf });
+            }
+          } catch (e) { /* justificatif illisible ignoré */ }
+        }
+      }
 
       const dest = new Set<string>([GMAIL]);
       const { data: cpae } = await sb.from("membres_cpae").select("email").eq("actif", true);
@@ -101,34 +181,50 @@ export async function POST(req: Request) {
       const { data: admins } = await sb.from("profiles").select("email").contains("roles", ["admin"]);
       (admins ?? []).forEach((a: any) => a.email && dest.add(a.email));
 
+      let html = `<div style="font-family:Arial,sans-serif"><h2>Caisse du ${fr(journee.date_caisse)}</h2>`;
+      if (premiereSoumission) {
+        html += `<p>La caisse du jour a été soumise par ${auth.nom}. Le récapitulatif est en pièce jointe (PDF), ainsi que les justificatifs.</p>`;
+      } else {
+        html += `<p><b>Correctifs apportés</b> à la caisse du ${fr(journee.date_caisse)}, soumis par ${auth.nom} le ${horodatage()} :</p><ul>`;
+        for (const c of correctifs) {
+          const quand = new Date(c.fait_le).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+          const libAction = c.type_action === "ajout" ? "Ajout" : c.type_action === "suppression" ? "Suppression" : "Modification";
+          html += `<li><b>${libAction}</b> — ${c.ligne_desc || ""}${c.details ? ` : ${c.details}` : ""} <i>(le ${quand} par ${c.auteur || "?"})</i></li>`;
+        }
+        html += `</ul><p>Le récapitulatif à jour est en pièce jointe (PDF), ainsi que les justificatifs.</p>`;
+      }
+      html += `</div>`;
+
+      const sujet = premiereSoumission
+        ? `Caisse du ${fr(journee.date_caisse)} — récapitulatif`
+        : `Caisse du ${fr(journee.date_caisse)} — CORRECTIFS`;
+
       await envoyerMail({
-        to: Array.from(dest),
-        subject: `Caisse du ${fr(journee.date_caisse)} — récapitulatif`,
-        html: `<div style="font-family:Arial,sans-serif"><h2>Caisse du ${fr(journee.date_caisse)}</h2>
-          <p>La caisse du jour a été soumise par ${auth.nom}. Le récapitulatif est en pièce jointe (PDF).</p></div>`,
-        attachments: [{ filename: `caisse-${journee.date_caisse}.pdf`, content: pdfBuffer }],
+        to: Array.from(dest), subject: sujet, html,
+        attachments: [{ filename: `caisse-${journee.date_caisse}.pdf`, content: pdfBuffer }, ...pjJustificatifs],
       });
 
-      await sb.from("caisse_journees").update({
-        statut: "soumise", soumise_par: auth.user.id, soumise_le: new Date().toISOString(),
-      }).eq("id", journee_id);
+      if (premiereSoumission) {
+        await sb.from("caisse_journees").update({
+          statut: "soumise", soumise_par: auth.user.id, soumise_le: new Date().toISOString(),
+        }).eq("id", journee_id);
+      } else {
+        await sb.from("caisse_modifications").update({ notifie: true }).eq("journee_id", journee_id).eq("notifie", false);
+        await sb.from("caisse_journees").update({ soumise_par: auth.user.id, soumise_le: new Date().toISOString() }).eq("id", journee_id);
+      }
 
-      return NextResponse.json({ ok: true });
+      return NextResponse.json({ ok: true, premiereSoumission });
     }
 
-    // Espace utilisé par les justificatifs (somme des tailles dans le bucket)
     if (action === "espace_justificatifs") {
-      let total = 0;
-      let nb = 0;
-      let offset = 0;
+      let total = 0; let nb = 0; let offset = 0;
       while (true) {
         const { data, error } = await sb.storage.from("justificatifs").list("", { limit: 100, offset });
         if (error) break;
         if (!data || data.length === 0) break;
         for (const f of data) {
           const taille = (f as any)?.metadata?.size ?? 0;
-          total += Number(taille) || 0;
-          nb++;
+          total += Number(taille) || 0; nb++;
         }
         if (data.length < 100) break;
         offset += 100;
@@ -142,7 +238,7 @@ export async function POST(req: Request) {
   }
 }
 
-async function genererPDF(journee: any, lignes: any[]): Promise<Buffer> {
+async function genererPDF(journee: any, lignes: any[], correctifs: any[] = []): Promise<Buffer> {
   const PDFDocument = (await import("pdfkit")).default;
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ margin: 40, size: "A4" });
@@ -186,6 +282,17 @@ async function genererPDF(journee: any, lignes: any[]): Promise<Buffer> {
       const tot = concernees.reduce((s, l) => s + Number(l.montant), 0);
       doc.text(`${libMoyen[m]} : ${nb} opération(s) — ${eur(tot)}`);
     });
+
+    if (correctifs && correctifs.length > 0) {
+      doc.moveDown();
+      doc.fillColor("#b45309").fontSize(13).text("Correctifs apportés depuis la dernière soumission", { underline: true });
+      doc.moveDown(0.3).fontSize(9).fillColor("#000");
+      correctifs.forEach((c) => {
+        const quand = new Date(c.fait_le).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+        const libAction = c.type_action === "ajout" ? "Ajout" : c.type_action === "suppression" ? "Suppression" : "Modification";
+        doc.text(`• ${libAction} — ${c.ligne_desc || ""}${c.details ? " : " + c.details : ""} (le ${quand} par ${c.auteur || "?"})`);
+      });
+    }
 
     doc.moveDown(2);
     doc.fontSize(8).fillColor("#999").text(`Document généré le ${new Date().toLocaleString("fr-FR")} — Alexandre FAMARE © 2026`, { align: "center" });

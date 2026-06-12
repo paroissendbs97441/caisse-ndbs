@@ -119,6 +119,7 @@ export async function POST(req: Request) {
       });
     }
 
+    // ===== PDF avec vrais tableaux =====
     const PDFDocument = (await import("pdfkit")).default;
     const pdfBuffer = await new Promise<Buffer>((resolve, reject) => {
       const doc = new PDFDocument({ margin: 40, size: "A4" });
@@ -127,43 +128,123 @@ export async function POST(req: Request) {
       doc.on("end", () => resolve(Buffer.concat(chunks)));
       doc.on("error", reject);
 
-      doc.fontSize(17).text("Caisse — Paroisse Notre Dame du Bon Secours", { align: "center" });
-      doc.moveDown(0.3);
-      doc.fontSize(13).fillColor("#555").text(titrePeriode, { align: "center" });
-      doc.moveDown();
+      const BLEU = "#2563eb", GRIS = "#475569", VERT = "#15803d", ROUGE = "#b91c1c";
+      const pageLeft = doc.page.margins.left;
+      const pageRight = doc.page.width - doc.page.margins.right;
+      const largeur = pageRight - pageLeft;
 
-      doc.fillColor("#000").fontSize(13).text("Récapitulatif", { underline: true });
-      doc.moveDown(0.3).fontSize(11);
-      doc.text(`Total entrées : ${eur(totalE)}`);
-      doc.text(`Total sorties : ${eur(totalS)}`);
-      doc.font("Helvetica-Bold").text(`Solde : ${eur(totalE - totalS)}`).font("Helvetica");
-      doc.moveDown(0.5);
+      // En-tête
+      doc.rect(pageLeft, 40, largeur, 54).fill("#f1f5f9");
+      doc.fillColor("#0f172a").fontSize(16).font("Helvetica-Bold")
+        .text("Caisse — Paroisse Notre Dame du Bon Secours", pageLeft + 14, 52, { width: largeur - 28 });
+      doc.fillColor(GRIS).fontSize(12).font("Helvetica")
+        .text(titrePeriode, pageLeft + 14, 73, { width: largeur - 28 });
+      doc.y = 110;
 
-      doc.fontSize(12).text("Entrées par catégorie", { underline: true });
-      doc.fontSize(10);
-      Object.entries(parCatE).sort((a, b) => b[1] - a[1]).forEach(([k, v]) => doc.text(`${k} : ${eur(v)}`));
-      doc.moveDown(0.3);
-      doc.fontSize(12).text("Dépenses par catégorie", { underline: true });
-      doc.fontSize(10);
-      const depCats = Object.entries(parCatS).sort((a, b) => b[1] - a[1]);
-      if (depCats.length === 0) doc.text("Aucune dépense.");
-      depCats.forEach(([k, v]) => doc.text(`${k} : ${eur(v)}`));
-      doc.moveDown(0.3);
-      doc.fontSize(12).text("Par moyen de paiement", { underline: true });
-      doc.fontSize(10);
-      Object.entries(parMoyen).forEach(([k, v]) => doc.text(`${libMoyenMap[k] || k} : ${eur(v)}`));
-      doc.moveDown();
-
-      doc.fontSize(13).text("Détail des opérations", { underline: true });
-      doc.moveDown(0.3).fontSize(8);
-      lignes.forEach((l) => {
-        const signe = l.type === "entree" ? "+" : "−";
-        const txt = `${fr(l._date)}  ${signe}${eur(Number(l.montant))}  |  ${l.categorie || "—"}  |  ${libMoyenMap[l.moyen] || l.moyen || "—"}${l.num_cheque ? " n°" + l.num_cheque : ""}  |  ${l.payeur_nom}${l.commentaire ? "  |  " + l.commentaire : ""}`;
-        doc.fillColor(l.type === "entree" ? "#15803d" : "#b91c1c").text(txt);
+      // Cartes de synthèse
+      const gap = 10;
+      const cardW = (largeur - 2 * gap) / 3;
+      const cardY = doc.y;
+      const cartes = [
+        { label: "Total entrées", valeur: eur(totalE), couleur: VERT },
+        { label: "Total sorties", valeur: eur(totalS), couleur: ROUGE },
+        { label: "Solde", valeur: eur(totalE - totalS), couleur: (totalE - totalS) >= 0 ? VERT : ROUGE },
+      ];
+      cartes.forEach((c, i) => {
+        const x = pageLeft + i * (cardW + gap);
+        doc.roundedRect(x, cardY, cardW, 50, 6).fill("#f8fafc").stroke("#e2e8f0");
+        doc.fillColor(GRIS).fontSize(9).font("Helvetica").text(c.label, x + 10, cardY + 9, { width: cardW - 20 });
+        doc.fillColor(c.couleur).fontSize(15).font("Helvetica-Bold").text(c.valeur, x + 10, cardY + 24, { width: cardW - 20 });
       });
+      doc.y = cardY + 50 + 18;
+      doc.fillColor("#000");
 
-      doc.moveDown(2);
-      doc.fontSize(8).fillColor("#999").text(`Document généré le ${new Date().toLocaleString("fr-FR")} — Alexandre FAMARE © 2026`, { align: "center" });
+      function dessinerTableau(titre: string, colonnes: { libelle: string; largeur: number; align?: "left" | "right" }[], donnees: string[][]) {
+        if (doc.y > doc.page.height - 120) doc.addPage();
+        doc.fillColor("#0f172a").fontSize(12).font("Helvetica-Bold").text(titre, pageLeft, doc.y);
+        doc.moveDown(0.3);
+        let y = doc.y;
+        const hauteurLigne = 18;
+        const totalLarg = colonnes.reduce((s, c) => s + c.largeur, 0);
+
+        doc.rect(pageLeft, y, totalLarg, hauteurLigne).fill(BLEU);
+        let x = pageLeft;
+        doc.fillColor("#fff").fontSize(9).font("Helvetica-Bold");
+        colonnes.forEach((col) => {
+          doc.text(col.libelle, x + 5, y + 5, { width: col.largeur - 10, align: col.align || "left" });
+          x += col.largeur;
+        });
+        y += hauteurLigne;
+
+        doc.font("Helvetica").fontSize(9);
+        donnees.forEach((ligne, idx) => {
+          if (y > doc.page.height - 60) {
+            doc.addPage();
+            y = doc.page.margins.top;
+            doc.rect(pageLeft, y, totalLarg, hauteurLigne).fill(BLEU);
+            let xh = pageLeft;
+            doc.fillColor("#fff").fontSize(9).font("Helvetica-Bold");
+            colonnes.forEach((col) => {
+              doc.text(col.libelle, xh + 5, y + 5, { width: col.largeur - 10, align: col.align || "left" });
+              xh += col.largeur;
+            });
+            y += hauteurLigne;
+            doc.font("Helvetica").fontSize(9);
+          }
+          if (idx % 2 === 0) doc.rect(pageLeft, y, totalLarg, hauteurLigne).fill("#f8fafc");
+          let xc = pageLeft;
+          doc.fillColor("#1e293b");
+          ligne.forEach((cell, ci) => {
+            doc.text(cell, xc + 5, y + 5, { width: colonnes[ci].largeur - 10, align: colonnes[ci].align || "left", lineBreak: false });
+            xc += colonnes[ci].largeur;
+          });
+          y += hauteurLigne;
+        });
+        doc.y = y + 12;
+        doc.fillColor("#000");
+      }
+
+      const lignesCatE = Object.entries(parCatE).sort((a, b) => b[1] - a[1]).map(([k, v]) => [k, eur(v)]);
+      if (lignesCatE.length === 0) lignesCatE.push(["Aucune entrée", ""]);
+      dessinerTableau("Entrées par catégorie",
+        [{ libelle: "Catégorie", largeur: largeur * 0.6 }, { libelle: "Montant", largeur: largeur * 0.4, align: "right" }],
+        lignesCatE);
+
+      const lignesCatS = Object.entries(parCatS).sort((a, b) => b[1] - a[1]).map(([k, v]) => [k, eur(v)]);
+      if (lignesCatS.length === 0) lignesCatS.push(["Aucune dépense", ""]);
+      dessinerTableau("Dépenses par catégorie",
+        [{ libelle: "Catégorie", largeur: largeur * 0.6 }, { libelle: "Montant", largeur: largeur * 0.4, align: "right" }],
+        lignesCatS);
+
+      const lignesMoyen = Object.entries(parMoyen).map(([k, v]) => [libMoyenMap[k] || k, eur(v)]);
+      if (lignesMoyen.length === 0) lignesMoyen.push(["—", ""]);
+      dessinerTableau("Par moyen de paiement",
+        [{ libelle: "Moyen", largeur: largeur * 0.6 }, { libelle: "Montant", largeur: largeur * 0.4, align: "right" }],
+        lignesMoyen);
+
+      const lignesDetail = lignes.map((l) => [
+        fr(l._date),
+        l.type === "entree" ? "Entrée" : "Sortie",
+        l.categorie || "—",
+        (l.type === "entree" ? "+" : "-") + eur(Number(l.montant)),
+        (libMoyenMap[l.moyen] || l.moyen || "—") + (l.num_cheque ? ` n°${l.num_cheque}` : ""),
+        l.payeur_nom || "",
+      ]);
+      if (lignesDetail.length === 0) lignesDetail.push(["—", "—", "—", "—", "—", "—"]);
+      dessinerTableau("Détail des opérations",
+        [
+          { libelle: "Date", largeur: largeur * 0.12 },
+          { libelle: "Type", largeur: largeur * 0.11 },
+          { libelle: "Catégorie", largeur: largeur * 0.2 },
+          { libelle: "Montant", largeur: largeur * 0.16, align: "right" },
+          { libelle: "Moyen", largeur: largeur * 0.18 },
+          { libelle: "Payeur", largeur: largeur * 0.23 },
+        ],
+        lignesDetail);
+
+      if (doc.y > doc.page.height - 50) doc.addPage();
+      doc.fontSize(8).fillColor("#94a3b8").font("Helvetica")
+        .text(`Document généré le ${new Date().toLocaleString("fr-FR")} — Alexandre FAMARE © 2026`, pageLeft, doc.page.height - 50, { width: largeur, align: "center" });
       doc.end();
     });
 

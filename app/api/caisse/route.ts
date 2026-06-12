@@ -44,32 +44,36 @@ export async function POST(req: Request) {
       const authC = await verifierRoles(access_token, ["comptable", "admin", "cure", "diacre"]);
       if (!authC) return NextResponse.json({ ok: false, error: "Accès réservé à l'espace comptable." }, { status: 403 });
 
-      // Tableau de bord : synthèse d'un mois (entrées/sorties/solde + répartition entrées par catégorie)
+      // Tableau de bord : synthèse d'un mois (entrées/sorties/solde + répartitions + comparaison mois précédent)
       if (action === "comptable_dashboard") {
         const { annee, mois } = body;
-        const prefixe = `${annee}-${mois}`;
-        const { data: journees } = await sb.from("caisse_journees").select("id, date_caisse");
-        const idsMois = (journees ?? []).filter((j) => j.date_caisse.startsWith(prefixe)).map((j) => j.id);
-        let totalE = 0, totalS = 0;
-        const parCategorie: Record<string, number> = {};
-        if (idsMois.length > 0) {
-          const { data: lignes } = await sb.from("caisse_lignes").select("*").in("journee_id", idsMois);
-          for (const l of lignes ?? []) {
-            if (l.type === "entree") {
-              totalE += Number(l.montant);
+        async function agregatsMois(prefixe: string) {
+          const { data: journees } = await sb.from("caisse_journees").select("id, date_caisse");
+          const ids = (journees ?? []).filter((j) => j.date_caisse.startsWith(prefixe)).map((j) => j.id);
+          let totE = 0, totS = 0;
+          const catE: Record<string, number> = {};
+          const catS: Record<string, number> = {};
+          if (ids.length > 0) {
+            const { data: lignes } = await sb.from("caisse_lignes").select("*").in("journee_id", ids);
+            for (const l of lignes ?? []) {
               const cat = l.categorie || "Sans catégorie";
-              parCategorie[cat] = (parCategorie[cat] || 0) + Number(l.montant);
-            } else {
-              totalS += Number(l.montant);
+              if (l.type === "entree") { totE += Number(l.montant); catE[cat] = (catE[cat] || 0) + Number(l.montant); }
+              else { totS += Number(l.montant); catS[cat] = (catS[cat] || 0) + Number(l.montant); }
             }
           }
+          const tri = (o: Record<string, number>) => Object.entries(o).map(([nom, montant]) => ({ nom, montant })).sort((a, b) => b.montant - a.montant);
+          return { totE, totS, solde: totE - totS, nbJournees: ids.length, categoriesE: tri(catE), categoriesS: tri(catS) };
         }
-        const categories = Object.entries(parCategorie)
-          .map(([nom, montant]) => ({ nom, montant }))
-          .sort((a, b) => b.montant - a.montant);
+        const actuel = await agregatsMois(`${annee}-${mois}`);
+        let pAn = Number(annee), pMo = Number(mois) - 1;
+        if (pMo === 0) { pMo = 12; pAn -= 1; }
+        const prefixePrec = `${pAn}-${String(pMo).padStart(2, "0")}`;
+        const precedent = await agregatsMois(prefixePrec);
         return NextResponse.json({
-          ok: true, totalE, totalS, solde: totalE - totalS,
-          nbJournees: idsMois.length, categories,
+          ok: true,
+          totalE: actuel.totE, totalS: actuel.totS, solde: actuel.solde, nbJournees: actuel.nbJournees,
+          categoriesE: actuel.categoriesE, categoriesS: actuel.categoriesS,
+          soldePrecedent: precedent.solde, moisPrecedentLabel: prefixePrec,
         });
       }
 

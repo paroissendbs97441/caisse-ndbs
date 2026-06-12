@@ -39,10 +39,39 @@ export async function POST(req: Request) {
     const { access_token, action } = body;
 
     // Actions de l'espace comptable : rôles élargis (comptable/admin/cure/diacre)
-    const ACTIONS_COMPTABLE = ["comptable_journees", "comptable_detail"];
+    const ACTIONS_COMPTABLE = ["comptable_journees", "comptable_detail", "comptable_dashboard"];
     if (ACTIONS_COMPTABLE.includes(action)) {
       const authC = await verifierRoles(access_token, ["comptable", "admin", "cure", "diacre"]);
       if (!authC) return NextResponse.json({ ok: false, error: "Accès réservé à l'espace comptable." }, { status: 403 });
+
+      // Tableau de bord : synthèse d'un mois (entrées/sorties/solde + répartition entrées par catégorie)
+      if (action === "comptable_dashboard") {
+        const { annee, mois } = body;
+        const prefixe = `${annee}-${mois}`;
+        const { data: journees } = await sb.from("caisse_journees").select("id, date_caisse");
+        const idsMois = (journees ?? []).filter((j) => j.date_caisse.startsWith(prefixe)).map((j) => j.id);
+        let totalE = 0, totalS = 0;
+        const parCategorie: Record<string, number> = {};
+        if (idsMois.length > 0) {
+          const { data: lignes } = await sb.from("caisse_lignes").select("*").in("journee_id", idsMois);
+          for (const l of lignes ?? []) {
+            if (l.type === "entree") {
+              totalE += Number(l.montant);
+              const cat = l.categorie || "Sans catégorie";
+              parCategorie[cat] = (parCategorie[cat] || 0) + Number(l.montant);
+            } else {
+              totalS += Number(l.montant);
+            }
+          }
+        }
+        const categories = Object.entries(parCategorie)
+          .map(([nom, montant]) => ({ nom, montant }))
+          .sort((a, b) => b.montant - a.montant);
+        return NextResponse.json({
+          ok: true, totalE, totalS, solde: totalE - totalS,
+          nbJournees: idsMois.length, categories,
+        });
+      }
 
       if (action === "comptable_journees") {
         const { annee, mois, recherche } = body;

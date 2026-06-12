@@ -9,6 +9,51 @@ const MOIS = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
   "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"];
 const COULEURS = ["#2563eb", "#15803d", "#b45309", "#9333ea", "#db2777", "#0891b2", "#ca8a04", "#dc2626", "#4f46e5", "#0d9488"];
 
+function Camembert({ data, titre }: { data: { nom: string; montant: number }[]; titre: string }) {
+  const eur = (n: number) => Number(n).toFixed(2).replace(".", ",") + " €";
+  const total = data.reduce((s, d) => s + d.montant, 0);
+  if (total <= 0) return (
+    <div style={{ flex: "1 1 280px" }}>
+      <h2 style={{ fontSize: 15 }}>{titre}</h2>
+      <p style={{ color: "#777", fontSize: 13 }}>Aucune donnée sur cette période.</p>
+    </div>
+  );
+  const R = 70, CX = 80, CY = 80;
+  let angle = -Math.PI / 2;
+  const parts = data.map((d, i) => {
+    const frac = d.montant / total;
+    const a0 = angle;
+    const a1 = angle + frac * 2 * Math.PI;
+    angle = a1;
+    const x0 = CX + R * Math.cos(a0), y0 = CY + R * Math.sin(a0);
+    const x1 = CX + R * Math.cos(a1), y1 = CY + R * Math.sin(a1);
+    const grand = frac > 0.5 ? 1 : 0;
+    const path = data.length === 1
+      ? `M ${CX} ${CY - R} A ${R} ${R} 0 1 1 ${CX - 0.01} ${CY - R} Z`
+      : `M ${CX} ${CY} L ${x0} ${y0} A ${R} ${R} 0 ${grand} 1 ${x1} ${y1} Z`;
+    return { path, couleur: COULEURS[i % COULEURS.length], ...d, pct: Math.round(frac * 1000) / 10 };
+  });
+  return (
+    <div style={{ flex: "1 1 280px" }}>
+      <h2 style={{ fontSize: 15 }}>{titre}</h2>
+      <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+        <svg width="160" height="160" viewBox="0 0 160 160">
+          {parts.map((p, i) => <path key={i} d={p.path} fill={p.couleur} stroke="#fff" strokeWidth="1" />)}
+        </svg>
+        <div style={{ fontSize: 12, flex: "1 1 140px" }}>
+          {parts.map((p, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, margin: "3px 0" }}>
+              <span style={{ width: 11, height: 11, background: p.couleur, borderRadius: 2, display: "inline-block", flexShrink: 0 }} />
+              <span style={{ flex: 1 }}>{p.nom}</span>
+              <span style={{ color: "#555" }}>{eur(p.montant)} ({p.pct}%)</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function Comptable() {
   const [token, setToken] = useState("");
   const [autorise, setAutorise] = useState<boolean | null>(null);
@@ -126,7 +171,15 @@ export default function Comptable() {
 
   const totE = journees.reduce((s, j) => s + j.totalE, 0);
   const totS = journees.reduce((s, j) => s + j.totalS, 0);
-  const maxCat = db?.categories?.length ? db.categories[0].montant : 0;
+
+  let ecart = 0, labelMoisPrec = "";
+  if (db) {
+    ecart = db.solde - (db.soldePrecedent ?? 0);
+    if (db.moisPrecedentLabel) {
+      const [a, m] = db.moisPrecedentLabel.split("-");
+      labelMoisPrec = `${MOIS[Number(m) - 1]} ${a}`;
+    }
+  }
 
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
@@ -183,30 +236,22 @@ export default function Comptable() {
                     <div style={{ fontSize: 22, fontWeight: 700, color: "#b91c1c" }}>{eur(db.totalS)}</div>
                   </div>
                   <div style={{ ...carte, flex: "1 1 150px", textAlign: "center" }}>
-                    <div style={{ fontSize: 13, color: "#555" }}>Solde</div>
+                    <div style={{ fontSize: 13, color: "#555" }}>Solde du mois</div>
                     <div style={{ fontSize: 22, fontWeight: 700, color: db.solde >= 0 ? "#15803d" : "#b91c1c" }}>{eur(db.solde)}</div>
+                    {labelMoisPrec && (
+                      <div style={{ fontSize: 12, marginTop: 4, color: ecart >= 0 ? "#15803d" : "#b91c1c" }}>
+                        {ecart >= 0 ? "↑" : "↓"} {eur(Math.abs(ecart))} vs {labelMoisPrec}
+                      </div>
+                    )}
                   </div>
                 </div>
                 <p style={{ fontSize: 12, color: "#999", textAlign: "center", margin: "4px 0" }}>{db.nbJournees} journée(s) sur la période</p>
 
                 <div style={carte}>
-                  <h2 style={{ fontSize: 16 }}>Répartition des entrées par catégorie</h2>
-                  {(!db.categories || db.categories.length === 0) && <p style={{ color: "#777" }}>Aucune entrée sur cette période.</p>}
-                  {db.categories && db.categories.map((c: any, i: number) => {
-                    const pct = maxCat > 0 ? (c.montant / maxCat) * 100 : 0;
-                    const pctTotal = db.totalE > 0 ? Math.round((c.montant / db.totalE) * 1000) / 10 : 0;
-                    return (
-                      <div key={c.nom} style={{ margin: "10px 0" }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 3 }}>
-                          <span>{c.nom}</span>
-                          <span><b>{eur(c.montant)}</b> <span style={{ color: "#999" }}>({pctTotal}%)</span></span>
-                        </div>
-                        <div style={{ height: 14, background: "#f1f5f9", borderRadius: 7, overflow: "hidden" }}>
-                          <div style={{ width: `${pct}%`, height: "100%", background: COULEURS[i % COULEURS.length], borderRadius: 7 }} />
-                        </div>
-                      </div>
-                    );
-                  })}
+                  <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
+                    <Camembert titre="Entrées par catégorie" data={db.categoriesE || []} />
+                    <Camembert titre="Dépenses par catégorie" data={db.categoriesS || []} />
+                  </div>
                 </div>
               </>
             )}

@@ -177,8 +177,15 @@ export default function Comptable() {
     ecart = db.solde - (db.soldePrecedent ?? 0);
     if (db.moisPrecedentLabel) {
       const [a, m] = db.moisPrecedentLabel.split("-");
-      labelMoisPrec = `${MOIS[Number(m) - 1]} ${a}`;
+      labelMoisPrec = `${MOIS[Number(m) - 1].toLowerCase()} ${a}`;
     }
+  }
+  const arrondi = Math.round(ecart * 100) / 100;
+  let texteComparaison = "", couleurComparaison = "#555";
+  if (db && labelMoisPrec) {
+    if (arrondi > 0) { texteComparaison = `Solde en hausse de ${eur(arrondi)} par rapport à ${labelMoisPrec}`; couleurComparaison = "#15803d"; }
+    else if (arrondi < 0) { texteComparaison = `Solde en baisse de ${eur(Math.abs(arrondi))} par rapport à ${labelMoisPrec}`; couleurComparaison = "#b91c1c"; }
+    else { texteComparaison = `Solde stable par rapport à ${labelMoisPrec}`; couleurComparaison = "#555"; }
   }
 
   return (
@@ -238,13 +245,13 @@ export default function Comptable() {
                   <div style={{ ...carte, flex: "1 1 150px", textAlign: "center" }}>
                     <div style={{ fontSize: 13, color: "#555" }}>Solde du mois</div>
                     <div style={{ fontSize: 22, fontWeight: 700, color: db.solde >= 0 ? "#15803d" : "#b91c1c" }}>{eur(db.solde)}</div>
-                    {labelMoisPrec && (
-                      <div style={{ fontSize: 12, marginTop: 4, color: ecart >= 0 ? "#15803d" : "#b91c1c" }}>
-                        {ecart >= 0 ? "↑" : "↓"} {eur(Math.abs(ecart))} vs {labelMoisPrec}
-                      </div>
-                    )}
                   </div>
                 </div>
+                {texteComparaison && (
+                  <div style={{ ...carte, padding: "10px 14px", textAlign: "center", fontSize: 14, color: couleurComparaison, fontWeight: 600 }}>
+                    {arrondi > 0 ? "↑ " : arrondi < 0 ? "↓ " : ""}{texteComparaison}
+                  </div>
+                )}
                 <p style={{ fontSize: 12, color: "#999", textAlign: "center", margin: "4px 0" }}>{db.nbJournees} journée(s) sur la période</p>
 
                 <div style={carte}>

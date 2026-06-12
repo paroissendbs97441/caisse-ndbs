@@ -60,6 +60,7 @@ export default function Comptable() {
   const [profil, setProfil] = useState<any>(null);
   const [onglet, setOnglet] = useState<"dashboard" | "archives">("dashboard");
   const [moyens, setMoyens] = useState<any[]>([]);
+  const [exportEnCours, setExportEnCours] = useState(false);
 
   const maintenant = new Date();
   const [dbAnnee, setDbAnnee] = useState(String(maintenant.getFullYear()));
@@ -151,6 +152,27 @@ export default function Comptable() {
     window.open(url, "_blank");
   }
 
+  async function exporter(format: "pdf" | "excel", perimetre: any) {
+    setExportEnCours(true);
+    try {
+      const res = await fetch("/api/export", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ access_token: token, format, perimetre }),
+      });
+      if (!res.ok) { alert("Erreur lors de l'export."); setExportEnCours(false); return; }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      const dispo = res.headers.get("Content-Disposition") || "";
+      const m = dispo.match(/filename="(.+?)"/);
+      a.download = m ? m[1] : `export.${format === "excel" ? "xlsx" : "pdf"}`;
+      document.body.appendChild(a); a.click(); a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (e) { alert("Erreur lors de l'export."); }
+    setExportEnCours(false);
+  }
+
   if (autorise === null) return <p style={{ padding: 40 }}>Chargement…</p>;
   if (autorise === false) return (
     <div style={{ padding: 40, textAlign: "center" }}>
@@ -226,7 +248,12 @@ export default function Comptable() {
                     {anneesDispo.map((a) => <option key={a} value={a}>{a}</option>)}
                   </select>
                 </div>
+                <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+                  <button style={btnExport} disabled={exportEnCours} onClick={() => exporter("pdf", { type: "mois", annee: dbAnnee, mois: dbMois })}>📄 PDF</button>
+                  <button style={btnExport} disabled={exportEnCours} onClick={() => exporter("excel", { type: "mois", annee: dbAnnee, mois: dbMois })}>📊 Excel</button>
+                </div>
               </div>
+              <p style={{ fontSize: 12, color: "#999", margin: "8px 0 0" }}>Les exports portent sur le mois sélectionné (récapitulatif + détail).</p>
             </div>
 
             {dbChargement && <div style={carte}><p style={{ color: "#777" }}>Chargement…</p></div>}
@@ -294,6 +321,12 @@ export default function Comptable() {
                   <button style={lien} onClick={() => { setAnnee(""); setMois(""); setRecherche(""); chargerArchives(token, "", "", ""); }}>Réinitialiser</button>
                 )}
               </div>
+              <div style={{ marginTop: 10, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                <span style={{ fontSize: 12, color: "#999" }}>Exporter la période filtrée :</span>
+                <button style={btnExport} disabled={exportEnCours} onClick={() => exporter("pdf", { type: "periode", annee, mois })}>📄 PDF</button>
+                <button style={btnExport} disabled={exportEnCours} onClick={() => exporter("excel", { type: "periode", annee, mois })}>📊 Excel</button>
+                <span style={{ fontSize: 11, color: "#bbb" }}>(la recherche texte n'est pas appliquée à l'export)</span>
+              </div>
             </div>
 
             {!chargement && journees.length > 0 && (
@@ -336,6 +369,11 @@ export default function Comptable() {
                           {l.justificatif_url && <button style={{ ...lien, fontSize: 12, marginLeft: 6 }} onClick={() => voirJustificatif(l.justificatif_url)}>📎 justificatif</button>}
                         </div>
                       ))}
+                      <div style={{ padding: "10px 10px 0", display: "flex", gap: 6, alignItems: "center" }}>
+                        <span style={{ fontSize: 12, color: "#999" }}>Exporter cette journée :</span>
+                        <button style={btnExport} disabled={exportEnCours} onClick={() => exporter("pdf", { type: "journee", journee_id: j.id })}>📄 PDF</button>
+                        <button style={btnExport} disabled={exportEnCours} onClick={() => exporter("excel", { type: "journee", journee_id: j.id })}>📊 Excel</button>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -353,6 +391,7 @@ const carte: React.CSSProperties = { background: "#fff", padding: 18, borderRadi
 const inp: React.CSSProperties = { display: "block", width: "100%", padding: 9, margin: "4px 0 0", borderRadius: 6, border: "1px solid #ccc", boxSizing: "border-box" };
 const lbl: React.CSSProperties = { fontSize: 13, color: "#555", fontWeight: 600 };
 const btn: React.CSSProperties = { padding: "9px 16px", background: "#2563eb", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 14 };
+const btnExport: React.CSSProperties = { padding: "7px 12px", background: "#f1f5f9", color: "#334155", border: "1px solid #cbd5e1", borderRadius: 6, cursor: "pointer", fontSize: 13 };
 const lien: React.CSSProperties = { background: "none", border: "none", color: "#2563eb", cursor: "pointer", fontSize: 14 };
 const pied: React.CSSProperties = { textAlign: "center", padding: 14, fontSize: 12, color: "#999" };
 function ongletStyle(actif: boolean): React.CSSProperties {

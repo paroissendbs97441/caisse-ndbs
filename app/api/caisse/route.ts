@@ -37,6 +37,43 @@ export async function POST(req: Request) {
     const sb = getSupabaseAdmin();
     const body = await req.json();
     const { access_token, action } = body;
+
+    // Actions de l'espace comptable : rôles élargis (comptable/admin/cure/diacre)
+    const ACTIONS_COMPTABLE = ["comptable_journees", "comptable_detail"];
+    if (ACTIONS_COMPTABLE.includes(action)) {
+      const authC = await verifierRoles(access_token, ["comptable", "admin", "cure", "diacre"]);
+      if (!authC) return NextResponse.json({ ok: false, error: "Accès réservé à l'espace comptable." }, { status: 403 });
+
+      if (action === "comptable_journees") {
+        const { annee, mois, recherche } = body;
+        const { data: journees } = await sb.from("caisse_journees").select("*").order("date_caisse", { ascending: false });
+        const resultat: any[] = [];
+        for (const j of journees ?? []) {
+          if (annee && !j.date_caisse.startsWith(annee)) continue;
+          if (mois && j.date_caisse.slice(5, 7) !== mois) continue;
+          const { data: lignes } = await sb.from("caisse_lignes").select("*").eq("journee_id", j.id);
+          let totalE = 0, totalS = 0;
+          let matchRecherche = !recherche;
+          for (const l of lignes ?? []) {
+            if (l.type === "entree") totalE += Number(l.montant); else totalS += Number(l.montant);
+            if (recherche) {
+              const r = recherche.toLowerCase();
+              if ((l.payeur_nom || "").toLowerCase().includes(r) || (l.categorie || "").toLowerCase().includes(r)) matchRecherche = true;
+            }
+          }
+          if (!matchRecherche) continue;
+          resultat.push({ id: j.id, date_caisse: j.date_caisse, statut: j.statut, totalE, totalS, solde: totalE - totalS, nbLignes: (lignes ?? []).length });
+        }
+        return NextResponse.json({ ok: true, journees: resultat });
+      }
+
+      if (action === "comptable_detail") {
+        const { journee_id } = body;
+        const { data: lignes } = await sb.from("caisse_lignes").select("*").eq("journee_id", journee_id).order("cree_le");
+        return NextResponse.json({ ok: true, lignes: lignes ?? [] });
+      }
+    }
+
     const auth = await verifierRoles(access_token, ROLES_SAISIE);
     if (!auth) return NextResponse.json({ ok: false, error: "Accès non autorisé." }, { status: 403 });
 
